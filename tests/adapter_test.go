@@ -2,14 +2,12 @@ package tests
 
 import (
 	"testing"
-	
-	"a2agateway/connector/internal/adapter"
 )
 
 // MockAdapter for testing
 type MockAdapter struct {
-	InitializeCalled bool
-	CloseCalled      bool
+	InitializeCalled  bool
+	CloseCalled       bool
 	ExecuteTaskAction string
 	ExecuteTaskParams map[string]interface{}
 }
@@ -40,7 +38,7 @@ func (m *MockAdapter) Close() error {
 
 func TestMockAdapter(t *testing.T) {
 	mock := &MockAdapter{}
-	
+
 	// Test Initialize
 	err := mock.Initialize()
 	if err != nil {
@@ -49,7 +47,7 @@ func TestMockAdapter(t *testing.T) {
 	if !mock.InitializeCalled {
 		t.Error("Initialize was not called")
 	}
-	
+
 	// Test GetCapabilities
 	caps, err := mock.GetCapabilities()
 	if err != nil {
@@ -58,7 +56,7 @@ func TestMockAdapter(t *testing.T) {
 	if caps["type"] != "mock" {
 		t.Errorf("Expected capability type 'mock', got '%v'", caps["type"])
 	}
-	
+
 	// Test ExecuteTask
 	result, err := mock.ExecuteTask("test_action", map[string]interface{}{"param": "value"})
 	if err != nil {
@@ -73,7 +71,7 @@ func TestMockAdapter(t *testing.T) {
 	if result["result"] != "mock_result" {
 		t.Errorf("Expected result 'mock_result', got '%v'", result["result"])
 	}
-	
+
 	// Test Close
 	err = mock.Close()
 	if err != nil {
