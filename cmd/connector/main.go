@@ -26,7 +26,7 @@ func main() {
     log.Println("Legacy system URL:", *legacyBaseURL)
 
     // Create a REST adapter for the legacy system
-    restAdapter := adapter.NewRESTAdapter(*legacyBaseURL)
+    restAdapter := adapter.NewRESTAdapter("Legacy REST", *legacyBaseURL, nil)
 
     // Create a transformer
     transformer := proxy.NewTransformer()

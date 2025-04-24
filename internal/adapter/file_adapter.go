@@ -125,11 +125,30 @@ func (a *FileAdapter) deleteFile(params map[string]interface{}) (map[string]inte
 
 // listFiles lists files in a directory
 func (a *FileAdapter) listFiles(params map[string]interface{}) (map[string]interface{}, error) {
-	dir := a.BasePath
-	
-	if dirParam, ok := params["directory"].(string); ok {
-		dir = filepath.Join(a.BasePath, dirParam)
-	}
-	
-	files,
+    dir := a.BasePath
+    
+    if dirParam, ok := params["directory"].(string); ok {
+        dir = filepath.Join(a.BasePath, dirParam)
+    }
+    
+    files, err := ioutil.ReadDir(dir)
+    if err != nil {
+        return nil, err
+    }
+    
+    fileList := make([]map[string]interface{}, 0, len(files))
+    for _, file := range files {
+        fileInfo := map[string]interface{}{
+            "name":  file.Name(),
+            "size":  file.Size(),
+            "isDir": file.IsDir(),
+            "mode":  file.Mode().String(),
+        }
+        fileList = append(fileList, fileInfo)
+    }
+    
+    return map[string]interface{}{
+        "files": fileList,
+    }, nil
+}
     

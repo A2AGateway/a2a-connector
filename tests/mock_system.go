@@ -1,10 +1,48 @@
-package tests
+package main
 
 import (
     "encoding/json"
+    "flag"
     "log"
     "net/http"
+    "os"
+    "os/signal"
+    "syscall"
 )
+
+func main() {
+    // Parse command-line flags
+    port := flag.String("port", "8081", "Port to listen on")
+    flag.Parse()
+
+    // Create and start the mock system
+    mockSystem := NewMockLegacySystem(*port)
+
+    // Set up a channel to listen for interrupt signals
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+    // Start the server in a goroutine
+    go func() {
+        log.Println("Starting mock legacy system on port", *port)
+        err := mockSystem.Start()
+        if err != nil && err != http.ErrServerClosed {
+            log.Fatalf("Failed to start mock system: %v", err)
+        }
+    }()
+
+    // Wait for interrupt signal
+    <-sigChan
+    log.Println("Shutting down...")
+
+    // Stop the server
+    err := mockSystem.Stop()
+    if err != nil {
+        log.Printf("Error stopping server: %v", err)
+    }
+
+    log.Println("Server stopped.")
+}
 
 // MockLegacySystem is a simple HTTP server that mimics a legacy system
 type MockLegacySystem struct {
