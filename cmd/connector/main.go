@@ -2,15 +2,19 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/A2AGateway/a2agateway/connector/internal/adapter"
 	"github.com/A2AGateway/a2agateway/connector/internal/proxy"
+	"github.com/A2AGateway/a2agateway/saas/pkg/a2a"
 )
 
 func main() {
@@ -46,14 +50,172 @@ func main() {
 	// Define transformation functions - these will convert between A2A and legacy formats
 	transformer.SetRequestTransform(func(data []byte) ([]byte, error) {
 		// Transform A2A format to legacy format
-		// Your transformation logic here
-		return data, nil
+		var taskData a2a.Task
+		if err := json.Unmarshal(data, &taskData); err != nil {
+			log.Printf("Error unmarshaling A2A task: %v", err)
+			return nil, err
+		}
+
+		// Extract information from the A2A task for the legacy system
+		// This logic depends on what the legacy system expects
+		
+		// Example: Extract customer ID from the message
+		var action string
+		var params map[string]interface{}
+		
+		// Initialize params
+		params = make(map[string]interface{})
+		
+		// Default action if we can't determine one
+		action = "query"
+		
+		// Check if we have a message to extract information from
+		if taskData.Status.Message != nil && len(taskData.Status.Message.Parts) > 0 {
+			// Process each part (using the updated Part interface)
+			for _, part := range taskData.Status.Message.Parts {
+				if part.GetType() == "text" {
+					if textPart, ok := part.(a2a.TextPart); ok {
+						text := textPart.Text
+						
+						// Try to determine the action based on the text
+						text = strings.ToLower(text)
+						
+						if strings.Contains(text, "get") || strings.Contains(text, "retrieve") || strings.Contains(text, "query") {
+							action = "getEntity"
+							
+							// Try to extract entity ID from formats like "ID: 12345" or similar patterns
+							if idx := strings.LastIndex(text, ":"); idx != -1 {
+								idStr := strings.TrimSpace(text[idx+1:])
+								params["id"] = idStr
+							}
+							
+							// Try to determine entity type
+							if strings.Contains(text, "customer") {
+								params["entityType"] = "customer"
+							} else if strings.Contains(text, "order") {
+								params["entityType"] = "order"
+							} else if strings.Contains(text, "product") || strings.Contains(text, "inventory") {
+								params["entityType"] = "product"
+							}
+						} else if strings.Contains(text, "update") || strings.Contains(text, "change") {
+							action = "updateEntity"
+							
+							// For update actions, we would need more sophisticated parsing
+							// of the text to extract entity type, ID, and fields to update
+							// This is a simplified example
+							if strings.Contains(text, "customer") {
+								params["entityType"] = "customer"
+							} else if strings.Contains(text, "order") {
+								params["entityType"] = "order"
+							} else if strings.Contains(text, "product") || strings.Contains(text, "inventory") {
+								params["entityType"] = "product"
+							}
+						}
+					}
+				} else if part.GetType() == "data" {
+					// Handle structured data if present
+					if dataPart, ok := part.(a2a.DataPart); ok {
+						// Extract fields from the data part
+						for k, v := range dataPart.Data {
+							params[k] = v
+						}
+					}
+				}
+			}
+		}
+		
+		// Create a legacy request format
+		legacyRequest := map[string]interface{}{
+			"action": action,
+			"params": params,
+			"meta": map[string]interface{}{
+				"taskId": taskData.ID,
+			},
+		}
+		
+		// Add any task metadata that might be useful for the legacy system
+		if taskData.Metadata != nil {
+			for k, v := range taskData.Metadata {
+				if _, exists := legacyRequest["meta"].(map[string]interface{})[k]; !exists {
+					legacyRequest["meta"].(map[string]interface{})[k] = v
+				}
+			}
+		}
+
+		return json.Marshal(legacyRequest)
 	})
 
 	transformer.SetResponseTransform(func(data []byte) ([]byte, error) {
 		// Transform legacy format to A2A format
-		// Your transformation logic here
-		return data, nil
+		var legacyResponse map[string]interface{}
+		if err := json.Unmarshal(data, &legacyResponse); err != nil {
+			log.Printf("Error unmarshaling legacy response: %v", err)
+			return nil, err
+		}
+		
+		// Get the task ID from the metadata if available
+		taskId := "unknown-task"
+		if meta, ok := legacyResponse["meta"].(map[string]interface{}); ok {
+			if id, ok := meta["taskId"].(string); ok {
+				taskId = id
+			}
+		}
+		
+		// Determine the task state based on the legacy response
+		taskState := a2a.TaskStateCompleted
+		if errorMsg, ok := legacyResponse["error"].(string); ok && errorMsg != "" {
+			taskState = a2a.TaskStateFailed
+		}
+		
+		// Create a new A2A task
+		task := a2a.NewTask(taskId, taskState)
+		
+		// Create parts for the response message
+		var parts []a2a.Part
+		
+		// Add a text part with a summary of the response
+		var textContent string
+		if status, ok := legacyResponse["status"].(string); ok {
+			textContent += "Status: " + status + "\n"
+		}
+		
+		// Add result data
+		if result, ok := legacyResponse["result"].(map[string]interface{}); ok {
+			// For structured data, we can create a data part
+			dataPart := a2a.NewDataPart(result)
+			parts = append(parts, dataPart)
+			
+			// Also add a summary as text
+			textContent += "Results:\n"
+			for k, v := range result {
+				textContent += k + ": " + fmt.Sprintf("%v", v) + "\n"
+			}
+		}
+		
+		// Add any error message
+		if errorMsg, ok := legacyResponse["error"].(string); ok && errorMsg != "" {
+			textContent += "Error: " + errorMsg + "\n"
+		}
+		
+		// Add the text part if we have text content
+		if textContent != "" {
+			textPart := a2a.NewTextPart(textContent)
+			parts = append(parts, textPart)
+		}
+		
+		// Create a message with the parts
+		message := a2a.NewMessage(a2a.RoleAgent, parts)
+		
+		// Add the message to the task
+		task.WithMessage(message)
+		
+		// Add metadata from the legacy response
+		if meta, ok := legacyResponse["meta"].(map[string]interface{}); ok {
+			task.Metadata = meta
+		}
+		
+		// Marshal the task to JSON
+		return json.Marshal(task)
 	})
 
 	// Create a proxy
