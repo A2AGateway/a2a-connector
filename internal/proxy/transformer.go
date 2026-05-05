@@ -68,6 +68,22 @@ func (t *Transformer) TransformRequest(req *http.Request) {
 	}
 }
 
+// TransformRequestData transforms raw bytes using the configured request transform function.
+func (t *Transformer) TransformRequestData(data []byte) ([]byte, error) {
+	if t.requestTransform == nil {
+		return data, nil
+	}
+	return t.requestTransform(data)
+}
+
+// TransformResponseData transforms raw bytes using the configured response transform function.
+func (t *Transformer) TransformResponseData(data []byte) ([]byte, error) {
+	if t.responseTransform == nil {
+		return data, nil
+	}
+	return t.responseTransform(data)
+}
+
 // TransformResponse transforms an HTTP response
 func (t *Transformer) TransformResponse(resp *http.Response) error {
 	// Add/modify headers

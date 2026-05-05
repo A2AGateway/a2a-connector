@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/A2AGateway/a2agateway/connector/internal/proxy"
-	"github.com/A2AGateway/a2agateway/saas/pkg/a2a"
+	"github.com/A2AGateway/a2a-connector/internal/proxy"
+	a2a "github.com/A2AGateway/a2a-protocol"
 )
 
 // No need to create a new MockAdapter since it already exists in this package, under adapter_test.go
@@ -72,16 +72,17 @@ func TestSimpleFlow(t *testing.T) {
 
 	// Set up transformation functions
 	transformer.SetRequestTransform(func(data []byte) ([]byte, error) {
-		// Transform A2A task to legacy format
-		var taskData a2a.Task
-		if err := json.Unmarshal(data, &taskData); err != nil {
+		// Transform A2A task to legacy format.
+		// Parse as a generic map to avoid the []Part interface-slice limitation
+		// when unmarshaling into a concrete a2a.Task.
+		var taskMap map[string]interface{}
+		if err := json.Unmarshal(data, &taskMap); err != nil {
 			return nil, err
 		}
 
-		// Example transformation to legacy format
 		legacyReq := map[string]interface{}{
 			"action":      "get_customer",
-			"customer_id": "12345", // Extract from task message
+			"customer_id": "12345",
 		}
 
 		return json.Marshal(legacyReq)

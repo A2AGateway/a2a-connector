@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/A2AGateway/a2agateway/connector/internal/adapter"
+	"github.com/A2AGateway/a2a-connector/internal/adapter"
 )
 
 // AuthResponse represents the Salesforce OAuth response

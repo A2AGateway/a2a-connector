@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/A2AGateway/a2agateway/saas/pkg/a2a"
+	a2a "github.com/A2AGateway/a2a-protocol"
 )
 
 func TestA2AToLegacyTransformation(t *testing.T) {

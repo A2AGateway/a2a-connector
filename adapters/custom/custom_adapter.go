@@ -3,7 +3,7 @@ package custom
 import (
 	"fmt"
 
-	"github.com/A2AGateway/a2agateway/connector/internal/adapter"
+	"github.com/A2AGateway/a2a-connector/internal/adapter"
 )
 
 // CustomAdapter is a template for custom system adapters

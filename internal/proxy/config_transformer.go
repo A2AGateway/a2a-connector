@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/A2AGateway/a2agateway/connector/internal/config"
-	"github.com/A2AGateway/a2agateway/saas/pkg/a2a"
+	"github.com/A2AGateway/a2a-connector/internal/config"
+	a2a "github.com/A2AGateway/a2a-protocol"
 )
 
 // ConfigTransformer is a transformer that uses configuration to transform requests and responses
@@ -137,9 +137,9 @@ func (t *ConfigTransformer) transformResponse(data []byte) ([]byte, error) {
 	parts := []map[string]interface{}{}
 
 	// Add text part if we have a template
-	if responseTransform.Template != "" && responseTransform.compiled != nil {
+	if responseTransform.Template != "" && responseTransform.CompiledTemplate != nil {
 		var buf bytes.Buffer
-		if err := responseTransform.compiled.Execute(&buf, legacyResponse); err == nil {
+		if err := responseTransform.CompiledTemplate.Execute(&buf, legacyResponse); err == nil {
 			textPart := map[string]interface{}{
 				"type": "text",
 				"text": buf.String(),
@@ -207,7 +207,7 @@ func (t *ConfigTransformer) findMatchingMapping(text string) (*config.MappingCon
 	
 	for i := range t.Config.Mappings {
 		mapping := &t.Config.Mappings[i]
-		if mapping.compiledPattern != nil && mapping.compiledPattern.MatchString(text) {
+		if mapping.CompiledPattern != nil && mapping.CompiledPattern.MatchString(text) {
 			return mapping, nil
 		}
 	}
@@ -222,8 +222,8 @@ func (t *ConfigTransformer) extractParameters(mapping *config.MappingConfig, tas
 	// Apply parameter mappings
 	for _, paramMapping := range mapping.ParameterMappings {
 		if paramMapping.Source == "text" {
-			if paramMapping.compiled != nil && paramMapping.compiled.MatchString(text) {
-				matches := paramMapping.compiled.FindStringSubmatch(text)
+			if paramMapping.Compiled != nil && paramMapping.Compiled.MatchString(text) {
+				matches := paramMapping.Compiled.FindStringSubmatch(text)
 				if len(matches) > 1 {
 					// Extract captured group and set in params
 					setValue(params, paramMapping.Target, matches[1])
@@ -398,10 +398,10 @@ func applyTransformRule(rule config.TransformRule, source, target map[string]int
 	var targetValue interface{} = sourceValue
 	
 	// Apply regex if provided
-	if rule.Regex != "" && rule.compiled != nil {
+	if rule.Regex != "" && rule.Compiled != nil {
 		if sourceStr, ok := sourceValue.(string); ok {
-			if rule.compiled.MatchString(sourceStr) {
-				matches := rule.compiled.FindStringSubmatch(sourceStr)
+			if rule.Compiled.MatchString(sourceStr) {
+				matches := rule.Compiled.FindStringSubmatch(sourceStr)
 				if len(matches) > 1 {
 					targetValue = matches[1]
 				}

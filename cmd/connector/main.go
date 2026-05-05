@@ -1,337 +1,342 @@
-// connector/cmd/connector/main.go
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
-	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
+	"time"
 
-	"github.com/A2AGateway/a2agateway/connector/internal/adapter"
-	"github.com/A2AGateway/a2agateway/connector/internal/config"
-	"github.com/A2AGateway/a2agateway/connector/internal/proxy"
-	"github.com/A2AGateway/a2agateway/saas/pkg/a2a"
+	a2a "github.com/A2AGateway/a2a-protocol"
+	"github.com/A2AGateway/a2a-connector/internal/adapter"
+	"github.com/A2AGateway/a2a-connector/internal/config"
+	"github.com/A2AGateway/a2a-connector/internal/gateway"
+	"github.com/A2AGateway/a2a-connector/internal/proxy"
 )
 
 func main() {
-	// Parse command-line flags
 	var (
-		saasEndpoint  = flag.String("saas-endpoint", "http://localhost:8080", "SaaS component endpoint")
-		connectorID   = flag.String("connector-id", "test-connector", "Connector ID")
+		saasEndpoint  = flag.String("saas-endpoint", "", "A2A Gateway base URL for registration (e.g. http://gateway:8080)")
+		connectorID   = flag.String("connector-id", "my-connector", "Unique connector ID registered with the gateway")
+		connectorHost = flag.String("connector-host", "http://localhost:8082", "Public URL of this connector (included in agent card)")
 		legacyBaseURL = flag.String("legacy-url", "http://localhost:8081", "Legacy system base URL")
-		connectorPort = flag.String("port", "8082", "Connector listening port")
-		configFile    = flag.String("config", "", "Path to configuration file (YAML or JSON)")
-		useConfig     = flag.Bool("use-config", false, "Use configuration file instead of command line parameters")
+		connectorPort = flag.String("port", "8082", "Port this connector listens on")
+		configFile    = flag.String("config", "", "Path to YAML/JSON config file")
+		useConfig     = flag.Bool("use-config", false, "Use config file instead of flags")
 	)
 	flag.Parse()
 
-	log.Println("Starting A2A Gateway Connector...")
-	
-	var cfg *config.ConnectorConfig
-	var err error
-	
-	// Load configuration if specified
-	if *useConfig && *configFile != "" {
-		log.Println("Loading configuration from:", *configFile)
-		cfg, err = config.LoadFromFile(*configFile)
-		if err != nil {
-			log.Fatalf("Failed to load configuration: %v", err)
-		}
-		
-		// Validate configuration
-		if err := config.ValidateConfig(cfg); err != nil {
-			log.Fatalf("Invalid configuration: %v", err)
-		}
-		
-		log.Println("Configuration loaded successfully")
-		log.Println("Connecting to legacy system at:", cfg.Adapter.BaseURL)
-	} else {
-		log.Println("Using command line parameters")
-		log.Println("Connecting to SaaS at:", *saasEndpoint)
-		log.Println("Connector ID:", *connectorID)
-		log.Println("Legacy system URL:", *legacyBaseURL)
-	}
-	
-	log.Println("Listening on port:", *connectorPort)
+	log.Println("Starting A2A Connector...")
 
+	// --- build adapter + transformer ---
+	var adptr adapter.Adapter
 	var transformer *proxy.Transformer
-	var legacyUrl string
+	var legacyURL string
 
-	// Initialize adapter and transformer based on configuration or command line parameters
-	if *useConfig && cfg != nil {
-		// Create appropriate adapter based on config
-		var adapterInstance adapter.Adapter
-		adapterConfig := make(map[string]interface{})
-		
-		switch cfg.Adapter.Type {
-		case "rest":
-			headers := make(map[string]string)
-			for k, v := range cfg.Adapter.Headers {
-				headers[k] = v
-			}
-			adapterInstance = adapter.NewRESTAdapter(cfg.Adapter.Name, cfg.Adapter.BaseURL, headers, adapterConfig)
-		case "soap":
-			// Create SOAP adapter
-			log.Println("SOAP adapter not fully implemented yet, using REST adapter")
-			headers := make(map[string]string)
-			adapterInstance = adapter.NewRESTAdapter(cfg.Adapter.Name, cfg.Adapter.BaseURL, headers, adapterConfig)
-		case "db":
-			// Create DB adapter
-			log.Println("DB adapter not fully implemented yet, using REST adapter")
-			headers := make(map[string]string)
-			adapterInstance = adapter.NewRESTAdapter(cfg.Adapter.Name, cfg.Adapter.BaseURL, headers, adapterConfig)
-		case "file":
-			// Create File adapter
-			log.Println("File adapter not fully implemented yet, using REST adapter")
-			headers := make(map[string]string)
-			adapterInstance = adapter.NewRESTAdapter(cfg.Adapter.Name, cfg.Adapter.BaseURL, headers, adapterConfig)
-		default:
-			log.Fatalf("Unsupported adapter type: %s", cfg.Adapter.Type)
+	if *useConfig && *configFile != "" {
+		cfg, err := config.LoadFromFile(*configFile)
+		if err != nil {
+			log.Fatalf("Failed to load config: %v", err)
 		}
-		
-		// Initialize the adapter
-		if err := adapterInstance.Initialize(); err != nil {
-			log.Fatalf("Failed to initialize adapter: %v", err)
+		if err := config.ValidateConfig(cfg); err != nil {
+			log.Fatalf("Invalid config: %v", err)
 		}
-		
-		// Create config-driven transformer
-		configTransformer := proxy.NewConfigTransformer(cfg)
-		transformer = &configTransformer.Transformer
-		legacyUrl = cfg.Adapter.BaseURL
-		
-	} else {
-		// Using command-line parameters
-		// Create a REST adapter for the legacy system
+
 		headers := make(map[string]string)
-		adapterConfig := make(map[string]interface{})
-		restAdapter := adapter.NewRESTAdapter("Legacy REST", *legacyBaseURL, headers, adapterConfig)
-		
-		// Initialize the adapter
-		if err := restAdapter.Initialize(); err != nil {
+		for k, v := range cfg.Adapter.Headers {
+			headers[k] = v
+		}
+		restAdptr := adapter.NewRESTAdapter(cfg.Adapter.Name, cfg.Adapter.BaseURL, headers, nil)
+		if err := restAdptr.Initialize(); err != nil {
 			log.Fatalf("Failed to initialize adapter: %v", err)
 		}
-		
-		// Create a traditional hardcoded transformer
+		adptr = restAdptr
+
+		ct := proxy.NewConfigTransformer(cfg)
+		transformer = &ct.Transformer
+		legacyURL = cfg.Adapter.BaseURL
+		log.Println("Connecting to legacy system at:", legacyURL)
+	} else {
+		headers := make(map[string]string)
+		restAdptr := adapter.NewRESTAdapter("Legacy REST", *legacyBaseURL, headers, nil)
+		if err := restAdptr.Initialize(); err != nil {
+			log.Fatalf("Failed to initialize adapter: %v", err)
+		}
+		adptr = restAdptr
+
 		transformer = proxy.NewTransformer()
-		
-		// Define transformation functions - these will convert between A2A and legacy formats
-		transformer.SetRequestTransform(func(data []byte) ([]byte, error) {
-			// Transform A2A format to legacy format
-			var taskData a2a.Task
-			if err := json.Unmarshal(data, &taskData); err != nil {
-				log.Printf("Error unmarshaling A2A task: %v", err)
-				return nil, err
-			}
-	
-			// Extract information from the A2A task for the legacy system
-			// This logic depends on what the legacy system expects
-			
-			// Example: Extract customer ID from the message
-			var action string
-			var params map[string]interface{}
-			
-			// Initialize params
-			params = make(map[string]interface{})
-			
-			// Default action if we can't determine one
-			action = "query"
-			
-			// Check if we have a message to extract information from
-			if taskData.Status.Message != nil && len(taskData.Status.Message.Parts) > 0 {
-				// Process each part (using the updated Part interface)
-				for _, part := range taskData.Status.Message.Parts {
-					if part.GetType() == "text" {
-						if textPart, ok := part.(a2a.TextPart); ok {
-							text := textPart.Text
-							
-							// Try to determine the action based on the text
-							text = strings.ToLower(text)
-							
-							if strings.Contains(text, "get") || strings.Contains(text, "retrieve") || strings.Contains(text, "query") {
-								action = "getEntity"
-								
-								// Try to extract entity ID from formats like "ID: 12345" or similar patterns
-								if idx := strings.LastIndex(text, ":"); idx != -1 {
-									idStr := strings.TrimSpace(text[idx+1:])
-									params["id"] = idStr
-								}
-								
-								// Try to determine entity type
-								if strings.Contains(text, "customer") {
-									params["entityType"] = "customer"
-								} else if strings.Contains(text, "order") {
-									params["entityType"] = "order"
-								} else if strings.Contains(text, "product") || strings.Contains(text, "inventory") {
-									params["entityType"] = "product"
-								}
-							} else if strings.Contains(text, "update") || strings.Contains(text, "change") {
-								action = "updateEntity"
-								
-								// For update actions, we would need more sophisticated parsing
-								// of the text to extract entity type, ID, and fields to update
-								// This is a simplified example
-								if strings.Contains(text, "customer") {
-									params["entityType"] = "customer"
-								} else if strings.Contains(text, "order") {
-									params["entityType"] = "order"
-								} else if strings.Contains(text, "product") || strings.Contains(text, "inventory") {
-									params["entityType"] = "product"
-								}
-							}
-						}
-					} else if part.GetType() == "data" {
-						// Handle structured data if present
-						if dataPart, ok := part.(a2a.DataPart); ok {
-							// Extract fields from the data part
-							for k, v := range dataPart.Data {
-								params[k] = v
-							}
-						}
-					}
-				}
-			}
-			
-			// Create a legacy request format
-			legacyRequest := map[string]interface{}{
-				"action": action,
-				"params": params,
-				"meta": map[string]interface{}{
-					"taskId": taskData.ID,
-				},
-			}
-			
-			// Add any task metadata that might be useful for the legacy system
-			if taskData.Metadata != nil {
-				for k, v := range taskData.Metadata {
-					if _, exists := legacyRequest["meta"].(map[string]interface{})[k]; !exists {
-						legacyRequest["meta"].(map[string]interface{})[k] = v
-					}
-				}
-			}
-	
-			return json.Marshal(legacyRequest)
-		})
-	
-		transformer.SetResponseTransform(func(data []byte) ([]byte, error) {
-			// Transform legacy format to A2A format
-			var legacyResponse map[string]interface{}
-			if err := json.Unmarshal(data, &legacyResponse); err != nil {
-				log.Printf("Error unmarshaling legacy response: %v", err)
-				return nil, err
-			}
-			
-			// Get the task ID from the metadata if available
-			taskId := "unknown-task"
-			if meta, ok := legacyResponse["meta"].(map[string]interface{}); ok {
-				if id, ok := meta["taskId"].(string); ok {
-					taskId = id
-				}
-			}
-			
-			// Determine the task state based on the legacy response
-			taskState := a2a.TaskStateCompleted
-			if errorMsg, ok := legacyResponse["error"].(string); ok && errorMsg != "" {
-				taskState = a2a.TaskStateFailed
-			}
-			
-			// Create a new A2A task
-			task := a2a.NewTask(taskId, taskState)
-			
-			// Create parts for the response message
-			var parts []a2a.Part
-			
-			// Add a text part with a summary of the response
-			var textContent string
-			if status, ok := legacyResponse["status"].(string); ok {
-				textContent += "Status: " + status + "\n"
-			}
-			
-			// Add result data
-			if result, ok := legacyResponse["result"].(map[string]interface{}); ok {
-				// For structured data, we can create a data part
-				dataPart := a2a.NewDataPart(result)
-				parts = append(parts, dataPart)
-				
-				// Also add a summary as text
-				textContent += "Results:\n"
-				for k, v := range result {
-					textContent += k + ": " + fmt.Sprintf("%v", v) + "\n"
-				}
-			}
-			
-			// Add any error message
-			if errorMsg, ok := legacyResponse["error"].(string); ok && errorMsg != "" {
-				textContent += "Error: " + errorMsg + "\n"
-			}
-			
-			// Add the text part if we have text content
-			if textContent != "" {
-				textPart := a2a.NewTextPart(textContent)
-				parts = append(parts, textPart)
-			}
-			
-			// Create a message with the parts
-			message := a2a.NewMessage(a2a.RoleAgent, parts)
-			
-			// Add the message to the task
-			task.WithMessage(message)
-			
-			// Add metadata from the legacy response
-			if meta, ok := legacyResponse["meta"].(map[string]interface{}); ok {
-				task.Metadata = meta
-			}
-			
-			// Marshal the task to JSON
-			return json.Marshal(task)
-		})
-		
-		legacyUrl = *legacyBaseURL
+		transformer.SetRequestTransform(defaultRequestTransform)
+		transformer.SetResponseTransform(defaultResponseTransform)
+		legacyURL = *legacyBaseURL
+		log.Println("Connecting to legacy system at:", legacyURL)
 	}
 
-	// Create a proxy
-	p, err := proxy.NewProxy(legacyUrl, transformer)
-	if err != nil {
-		log.Fatalf("Failed to create proxy: %v", err)
-	}
-
-	// Set up a channel to listen for interrupt signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Create HTTP server
-	server := &http.Server{
-		Addr:    ":" + *connectorPort,
-		Handler: p, // Use the proxy as the handler
-	}
-
-	// Start the server in a goroutine
-	go func() {
-		log.Println("Server listening on port", *connectorPort)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start server: %v", err)
+	defer func() {
+		if err := adptr.Close(); err != nil {
+			log.Printf("Error closing adapter: %v", err)
 		}
 	}()
 
-	log.Println("Connector started. Press Ctrl+C to exit.")
+	// --- agent card ---
+	card := buildAgentCard(*connectorID, *connectorHost, adptr)
 
-	// Wait for interrupt signal
+	// --- gateway registration ---
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if *saasEndpoint != "" {
+		gwClient := gateway.NewClient(*saasEndpoint, *connectorID, *connectorHost)
+		if err := gwClient.Register(card); err != nil {
+			log.Printf("Warning: gateway registration failed: %v", err)
+		} else {
+			log.Printf("Registered connector %q with gateway at %s", *connectorID, *saasEndpoint)
+		}
+		gwClient.StartHeartbeat(ctx, 30*time.Second)
+	} else {
+		log.Println("Warning: --saas-endpoint not set; running standalone (not registered with gateway)")
+	}
+
+	// --- HTTP routes ---
+	mux := http.NewServeMux()
+
+	// A2A discovery: gateway and other agents fetch this to learn what the connector can do
+	mux.HandleFunc("/.well-known/agent.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(card)
+	})
+
+	// A2A JSON-RPC endpoint: gateway forwards tasks here
+	mux.HandleFunc("/", a2aHandler(transformer, adptr))
+
+	server := &http.Server{
+		Addr:         ":" + *connectorPort,
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		log.Printf("Connector listening on :%s", *connectorPort)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
 	<-sigChan
 	log.Println("Shutting down...")
-
-	// Stop the server
+	cancel()
 	if err := server.Close(); err != nil {
 		log.Printf("Error stopping server: %v", err)
 	}
+	log.Println("Connector stopped.")
+}
 
-	// Close the adapter
-	if err := restAdapter.Close(); err != nil {
-		log.Printf("Error closing adapter: %v", err)
+// a2aHandler handles incoming A2A JSON-RPC requests from the gateway.
+func a2aHandler(transformer *proxy.Transformer, adptr adapter.Adapter) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeRPCError(w, nil, a2a.ErrCodeParseError, "Failed to read request body", nil)
+			return
+		}
+
+		var rpcReq a2a.JSONRPCRequest
+		if err := json.Unmarshal(body, &rpcReq); err != nil {
+			writeRPCError(w, nil, a2a.ErrCodeParseError, "Invalid JSON", nil)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		switch rpcReq.Method {
+		case "tasks/send":
+			handleTaskSend(w, rpcReq, transformer, adptr)
+		default:
+			writeRPCError(w, rpcReq.ID, a2a.ErrCodeMethodNotFound, "Method not found", nil)
+		}
+	}
+}
+
+func handleTaskSend(w http.ResponseWriter, rpcReq a2a.JSONRPCRequest, transformer *proxy.Transformer, adptr adapter.Adapter) {
+	paramsBytes, err := json.Marshal(rpcReq.Params)
+	if err != nil {
+		writeRPCError(w, rpcReq.ID, a2a.ErrCodeInvalidParams, "Failed to parse params", nil)
+		return
 	}
 
-	log.Println("Connector stopped.")
+	// A2A task params → legacy request format
+	legacyData, err := transformer.TransformRequestData(paramsBytes)
+	if err != nil {
+		writeRPCError(w, rpcReq.ID, a2a.ErrCodeInternalError, "Request transform failed", err.Error())
+		return
+	}
+
+	var legacyReq map[string]interface{}
+	if err := json.Unmarshal(legacyData, &legacyReq); err != nil {
+		writeRPCError(w, rpcReq.ID, a2a.ErrCodeInternalError, "Bad legacy request format", err.Error())
+		return
+	}
+
+	action, _ := legacyReq["action"].(string)
+	params, _ := legacyReq["params"].(map[string]interface{})
+	result, execErr := adptr.ExecuteTask(action, params)
+
+	legacyResp := map[string]interface{}{
+		"result": result,
+		"meta":   legacyReq["meta"],
+	}
+	if execErr != nil {
+		legacyResp["status"] = "error"
+		legacyResp["error"] = execErr.Error()
+	} else {
+		legacyResp["status"] = "success"
+	}
+
+	legacyRespBytes, _ := json.Marshal(legacyResp)
+
+	// Legacy response → A2A task
+	a2aRespBytes, err := transformer.TransformResponseData(legacyRespBytes)
+	if err != nil {
+		writeRPCError(w, rpcReq.ID, a2a.ErrCodeInternalError, "Response transform failed", err.Error())
+		return
+	}
+
+	var task interface{}
+	json.Unmarshal(a2aRespBytes, &task)
+
+	json.NewEncoder(w).Encode(a2a.JSONRPCResponse{
+		JSONRPC: a2a.JSONRPCVersion,
+		ID:      rpcReq.ID,
+		Result:  task,
+	})
+}
+
+func writeRPCError(w http.ResponseWriter, id interface{}, code int, msg string, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a2a.JSONRPCResponse{
+		JSONRPC: a2a.JSONRPCVersion,
+		ID:      id,
+		Error:   &a2a.JSONRPCError{Code: code, Message: msg, Data: data},
+	})
+}
+
+// buildAgentCard constructs the A2A agent card that describes this connector.
+func buildAgentCard(id, url string, adptr adapter.Adapter) *a2a.AgentCard {
+	caps, _ := adptr.GetCapabilities()
+	adapterType := "rest"
+	if t, ok := caps["type"].(string); ok {
+		adapterType = t
+	}
+
+	desc := "A2A Connector bridging a legacy " + adapterType + " system"
+	skillDesc := "Execute a task on the connected legacy system"
+	skill := a2a.AgentSkill{
+		ID:          "legacy-execute",
+		Name:        "Execute Legacy Task",
+		Description: &skillDesc,
+		Tags:        []string{"legacy", adapterType},
+		InputModes:  []string{"text"},
+		OutputModes: []string{"text", "data"},
+	}
+
+	card := a2a.NewAgentCard(
+		id, url, "1.0.0",
+		a2a.AgentCapabilities{Streaming: false, PushNotifications: false},
+		[]a2a.AgentSkill{skill},
+	)
+	card.WithDescription(desc)
+	return card
+}
+
+// defaultRequestTransform converts an A2A task payload to a generic legacy request.
+// Replace this with config-driven mappings for production use.
+func defaultRequestTransform(data []byte) ([]byte, error) {
+	var taskMap map[string]interface{}
+	if err := json.Unmarshal(data, &taskMap); err != nil {
+		return nil, err
+	}
+
+	action := "query"
+	params := map[string]interface{}{}
+
+	if status, ok := taskMap["status"].(map[string]interface{}); ok {
+		if msg, ok := status["message"].(map[string]interface{}); ok {
+			if parts, ok := msg["parts"].([]interface{}); ok {
+				for _, p := range parts {
+					if part, ok := p.(map[string]interface{}); ok {
+						if part["type"] == "text" {
+							if text, ok := part["text"].(string); ok {
+								params["text"] = text
+								action = "execute"
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	taskID := ""
+	if id, ok := taskMap["id"].(string); ok {
+		taskID = id
+	}
+
+	return json.Marshal(map[string]interface{}{
+		"action": action,
+		"params": params,
+		"meta":   map[string]interface{}{"taskId": taskID},
+	})
+}
+
+// defaultResponseTransform converts a legacy response to an A2A task.
+func defaultResponseTransform(data []byte) ([]byte, error) {
+	var resp map[string]interface{}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+
+	taskID := "unknown"
+	if meta, ok := resp["meta"].(map[string]interface{}); ok {
+		if id, ok := meta["taskId"].(string); ok {
+			taskID = id
+		}
+	}
+
+	state := string(a2a.TaskStateCompleted)
+	if _, hasErr := resp["error"]; hasErr {
+		state = string(a2a.TaskStateFailed)
+	}
+
+	parts := []map[string]interface{}{}
+	if result, ok := resp["result"].(map[string]interface{}); ok {
+		parts = append(parts, map[string]interface{}{"type": "data", "data": result})
+	}
+	if errMsg, ok := resp["error"].(string); ok {
+		parts = append(parts, map[string]interface{}{"type": "text", "text": "Error: " + errMsg})
+	}
+
+	return json.Marshal(map[string]interface{}{
+		"id": taskID,
+		"status": map[string]interface{}{
+			"state":     state,
+			"timestamp": time.Now().Format(time.RFC3339),
+			"message": map[string]interface{}{
+				"role":  "agent",
+				"parts": parts,
+			},
+		},
+	})
 }

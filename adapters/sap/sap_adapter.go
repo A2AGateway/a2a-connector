@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/A2AGateway/a2agateway/connector/internal/adapter"
+	"github.com/A2AGateway/a2a-connector/internal/adapter"
 )
 
 // IntegrationType defines the SAP integration method
