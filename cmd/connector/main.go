@@ -104,6 +104,12 @@ func main() {
 	// --- HTTP routes ---
 	mux := http.NewServeMux()
 
+	// Health check — used by the A2A Gateway UI to verify the connector is reachable
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy", "connector": *connectorID})
+	})
+
 	// A2A discovery: gateway and other agents fetch this to learn what the connector can do
 	mux.HandleFunc("/.well-known/agent.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
