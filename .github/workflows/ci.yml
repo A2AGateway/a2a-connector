@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout a2a-connector
+        uses: actions/checkout@v4
+        with:
+          path: a2a-connector
+
+      - name: Checkout a2a-protocol
+        uses: actions/checkout@v4
+        with:
+          repository: A2AGateway/a2a-protocol
+          path: a2a-protocol
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: a2a-connector/go.mod
+          cache-dependency-path: a2a-connector/go.sum
+
+      - name: Download dependencies
+        working-directory: a2a-connector
+        run: go mod download
+
+      - name: Build
+        working-directory: a2a-connector
+        run: CGO_ENABLED=0 go build ./...
+
+      - name: Test
+        working-directory: a2a-connector
+        run: go test ./...
